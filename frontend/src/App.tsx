@@ -35,6 +35,9 @@ export default function App() {
 
   // Job params
   const [tileSize, setTileSize] = useState<number>(32);
+  const [noRepeatK, setNoRepeatK] = useState<number>(30);
+  const [colorStrength, setColorStrength] = useState<number>(0.35);
+
 
   // Job state
   const [jobId, setJobId] = useState<string | null>(null);
@@ -158,6 +161,8 @@ export default function App() {
     fd.append("target_id", selectedTarget);
     fd.append("material_id", selectedMaterial);
     fd.append("tile_size", String(tileSize));
+    fd.append("no_repeat_k", String(noRepeatK));
+    fd.append("color_strength", String(colorStrength));
 
     setMessage("Creating job...");
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
@@ -198,7 +203,7 @@ export default function App() {
     <div style={{ maxWidth: 980, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ marginBottom: 6 }}>PixMo</h1>
       <p style={{ marginTop: 0, color: "#666" }}>
-        素材セット/ターゲットを登録して、選んで生成（アプリ起動中は保持）
+        素材セット/ターゲットを登録して，選んで生成（アプリ起動中は登録された画像が保持されます．）
       </p>
 
       {/* Targets */}
@@ -307,6 +312,30 @@ export default function App() {
               max={128}
               value={tileSize}
               onChange={(e) => setTileSize(Number(e.target.value))}
+              style={{ marginLeft: 8, width: 90 }}
+            />
+          </label>
+          <label>
+            連続抑制K
+            <input
+              type="number"
+              min={0}
+              max={500}
+              value={noRepeatK}
+              onChange={(e) => setNoRepeatK(Number(e.target.value))}
+              style={{ marginLeft: 8, width: 90 }}
+            />
+          </label>
+
+          <label>
+            色補正(0-1)
+            <input
+              type="number"
+              step="0.05"
+              min={0}
+              max={1}
+              value={colorStrength}
+              onChange={(e) => setColorStrength(Number(e.target.value))}
               style={{ marginLeft: 8, width: 90 }}
             />
           </label>
