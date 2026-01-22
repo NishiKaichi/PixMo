@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import "./App.css";
+
 
 type Material = {
   id: string;
@@ -34,10 +36,11 @@ export default function App() {
   const [targetFile, setTargetFile] = useState<File | null>(null);
 
   // Job params
-  const [tileSize, setTileSize] = useState<number>(32);
-  const [noRepeatK, setNoRepeatK] = useState<number>(30);
+  const [tileSize, setTileSize] = useState<number>(64);
+  const [noRepeatK, setNoRepeatK] = useState<number>(15);
   const [colorStrength, setColorStrength] = useState<number>(0.35);
-
+  const [overlayStrength, setOverlayStrength] = useState<number>(0.2);
+  const [overlayEnabled, setOverlayEnabled] = useState<boolean>(false);
 
   // Job state
   const [jobId, setJobId] = useState<string | null>(null);
@@ -163,6 +166,7 @@ export default function App() {
     fd.append("tile_size", String(tileSize));
     fd.append("no_repeat_k", String(noRepeatK));
     fd.append("color_strength", String(colorStrength));
+    fd.append("overlay_strength", String(overlayEnabled ? overlayStrength : 0));
 
     setMessage("Creating job...");
     const res = await fetch("/api/jobs", { method: "POST", body: fd });
@@ -303,52 +307,116 @@ export default function App() {
       <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
         <h2 style={{ marginTop: 0 }}>3) 生成</h2>
 
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <label>
-            タイルサイズ
+        <div style={{ display: "grid", gap: 14 }}>
+          {/* タイルサイズ（スライダー） */}
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>タイルサイズ</span>
+              <b>{tileSize}px</b>
+            </div>
             <input
-              type="number"
+              type="range"
               min={8}
-              max={128}
+              max={256}
+              step={1}
               value={tileSize}
               onChange={(e) => setTileSize(Number(e.target.value))}
-              style={{ marginLeft: 8, width: 90 }}
             />
-          </label>
-          <label>
-            連続抑制K
+            <div style={{ color: "#666", fontSize: 12 }}>
+              タイルサイズは64px以上を推奨しています（小さいほど画像の生成に時間がかかります）
+            </div>
+          </div>
+
+          {/* 連続抑制K（スライダー） */}
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>同一タイルの連続抑制</span>
+              <b>{noRepeatK}</b>
+            </div>
             <input
-              type="number"
+              type="range"
               min={0}
-              max={500}
+              max={30}
+              step={1}
               value={noRepeatK}
               onChange={(e) => setNoRepeatK(Number(e.target.value))}
-              style={{ marginLeft: 8, width: 90 }}
             />
-          </label>
+            <div style={{ color: "#666", fontSize: 12 }}>
+              同一タイルの連続使用を調整します
+              適切なタイルが見つからない場合連続抑制をしていても同一タイルが使用されます
+            </div>
+          </div>
 
-          <label>
-            色補正(0-1)
+          {/* 色補正（スライダー） */}
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>色補正</span>
+              <b>{colorStrength.toFixed(2)}</b>
+            </div>
             <input
-              type="number"
-              step="0.05"
+              type="range"
               min={0}
               max={1}
+              step={0.05}
               value={colorStrength}
               onChange={(e) => setColorStrength(Number(e.target.value))}
-              style={{ marginLeft: 8, width: 90 }}
             />
-          </label>
+            <div style={{ color: "#666", fontSize: 12 }}>
+              タイルの色味を補正して作成画像の再現度を高めます
+              0.4〜0.6程度を推奨しています
+            </div>
+          </div>
+          {/* オーバーレイ（トグル＋スライダー） */}
+          <div style={{ display: "grid", gap: 10, padding: 12, border: "1px solid #ddd", borderRadius: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>元画像オーバーレイ</span>
 
-          <button onClick={startJob} style={{ padding: "8px 14px", borderRadius: 10, cursor: "pointer" }}>
-            生成開始
-          </button>
+              {/* トグル */}
+              <label className="switch">
+                <input
+                  type="checkbox"
+                  checked={overlayEnabled}
+                  onChange={(e) => setOverlayEnabled(e.target.checked)}
+                />
+                <span className="switch-slider" />
+              </label>
+            </div>
 
-          {selectedTargetObj && (
-            <span style={{ color: "#666" }}>
-              出力サイズ：{selectedTargetObj.width}×{selectedTargetObj.height}（ターゲットと同一）
-            </span>
-          )}
+            <div style={{ opacity: overlayEnabled ? 1 : 0.45 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span>強度</span>
+                <b>{overlayEnabled ? overlayStrength.toFixed(2) : "OFF"}</b>
+              </div>
+
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={overlayStrength}
+                disabled={!overlayEnabled}
+                onChange={(e) => setOverlayStrength(Number(e.target.value))}
+              />
+
+              <div style={{ color: "#666", fontSize: 12, marginTop: 6 }}>
+                ONにすると薄めた元画像をオーバーレイします
+                これにより滑らかな仕上がりになりますが強度が高すぎるとモザイク感が薄れます
+              </div>
+            </div>
+          </div>
+
+          {/* 生成ボタン（元の位置でOK） */}
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <button onClick={startJob} style={{ padding: "10px 16px", borderRadius: 10, cursor: "pointer" }}>
+              生成開始
+            </button>
+
+            {selectedTargetObj && (
+              <span style={{ color: "#666" }}>
+                出力サイズ：{selectedTargetObj.width}×{selectedTargetObj.height}（ターゲットと同一）
+              </span>
+            )}
+          </div>
         </div>
 
         {jobId && (

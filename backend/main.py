@@ -329,8 +329,8 @@ def build_mosaic_exact_size(
     job_id: str,
     no_repeat_k: int,
     color_strength: float,
-    ):
-
+    overlay_strength: float,  
+):
     _set("jobs", job_id, status="running", progress=0, message="Loading target...")
 
     with Image.open(target_path) as timg:
@@ -398,13 +398,19 @@ def build_mosaic_exact_size(
             done += 1
 
         _set("jobs", job_id, progress=int(done / total_cells * 99))
+    if overlay_strength > 0.0:
+        _set("jobs", job_id, message="Blending overlay...", progress=99)
+        out = Image.blend(out, target, overlay_strength)  # (1-a)*out + a*target
+
     _set("jobs", job_id, message="Saving...", progress=99)
     out.save(out_path, quality=92)
     _set("jobs", job_id, status="done", progress=100, message="Done!", result_path=str(out_path))
 
 
 
-def run_job(job_id: str, target_path: Path, material_id: str, tile_size: int, no_repeat_k: int, color_strength: float):
+
+def run_job(job_id: str, target_path: Path, material_id: str, tile_size: int, no_repeat_k: int, color_strength: float, overlay_strength: float):
+
     try:
         material = _get("materials", material_id)
         if material["status"] != "ready":
@@ -419,7 +425,9 @@ def run_job(job_id: str, target_path: Path, material_id: str, tile_size: int, no
             job_id=job_id,
             no_repeat_k=no_repeat_k,
             color_strength=color_strength,
+            overlay_strength=overlay_strength,
         )
+
     except Exception as e:
         _set("jobs", job_id, status="error", message=str(e))
 
@@ -601,6 +609,7 @@ async def create_job(
     tile_size: int = Form(32),
     no_repeat_k: int = Form(30),
     color_strength: float = Form(0.35),
+    overlay_strength: float = Form(0.0),
 ):
     if tile_size < 8 or tile_size > 128:
         raise HTTPException(400, "tile_sizeは8〜128の範囲にしてください")
@@ -608,7 +617,8 @@ async def create_job(
         raise HTTPException(400, "no_repeat_kは0〜500の範囲にしてください")
     if color_strength < 0.0 or color_strength > 1.0:
         raise HTTPException(400, "color_strengthは0.0〜1.0の範囲にしてください")
-
+    if overlay_strength < 0.0 or overlay_strength > 1.0:
+        raise HTTPException(400, "overlay_strengthは0.0〜1.0の範囲にしてください")
     try:
         t = _get("targets", target_id)
     except KeyError:
@@ -638,9 +648,10 @@ async def create_job(
 
     th = threading.Thread(
         target=run_job,
-        args=(job_id, target_path, material_id, tile_size, no_repeat_k, color_strength),
+        args=(job_id, target_path, material_id, tile_size, no_repeat_k, color_strength, overlay_strength),
         daemon=True
     )
+
     th.start()
 
 
