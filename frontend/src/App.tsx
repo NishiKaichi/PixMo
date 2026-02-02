@@ -1,6 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
 
+const SESSION_KEY = "pixmo_session_id";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+function apiUrl(path: string): string {
+  if (!API_BASE) return path;
+  const base = API_BASE.endsWith("/") ? API_BASE.slice(0, -1) : API_BASE;
+  return `${base}${path}`;
+}
+
+
+function getOrCreateSessionId(): string {
+  const existing = localStorage.getItem(SESSION_KEY);
+  if (existing) return existing;
+  const sid = crypto.randomUUID();
+  localStorage.setItem(SESSION_KEY, sid);
+  return sid;
+}
 
 type Material = {
   id: string;
@@ -22,6 +39,17 @@ type Target = {
 type JobStatus = "queued" | "running" | "done" | "error";
 
 export default function App() {
+  const sessionId = useMemo(() => getOrCreateSessionId(), []);
+
+  async function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
+    const headers = new Headers(init?.headers ?? {});
+    headers.set("X-Session-Id", sessionId);
+    if (typeof input === "string" && input.startsWith("/")) {
+      return fetch(apiUrl(input), { ...init, headers });
+    }
+    return fetch(input, { ...init, headers });
+  }
+
   // ---- Libraries ----
   const [materials, setMaterials] = useState<Material[]>([]);
   const [targets, setTargets] = useState<Target[]>([]);
@@ -50,11 +78,11 @@ export default function App() {
 
   const resultUrl = useMemo(() => {
     if (!jobId || status !== "done") return null;
-    return `/api/jobs/${jobId}/result?v=${Date.now()}`;
-  }, [jobId, status]);
+    return apiUrl(`/api/jobs/${jobId}/result?sid=${encodeURIComponent(sessionId)}&v=${Date.now()}`);
+  }, [jobId, status, sessionId]);
 
   async function refreshMaterials() {
-    const res = await fetch("/api/materials");
+    const res = await apiFetch("/api/materials");
     const data = await res.json();
     setMaterials(data.materials);
     // 初期選択
@@ -65,13 +93,25 @@ export default function App() {
   }
 
   async function refreshTargets() {
-    const res = await fetch("/api/targets");
+    const res = await apiFetch("/api/targets");
     const data = await res.json();
     setTargets(data.targets);
     if (!selectedTarget && data.targets?.length) {
       setSelectedTarget(data.targets[0].id);
     }
   }
+
+  useEffect(() => {
+    const onPageHide = () => {
+      const payload = JSON.stringify({ session_id: sessionId });
+      navigator.sendBeacon(
+        apiUrl("/api/session/close"),
+        new Blob([payload], { type: "application/json" })
+      );
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [sessionId]);
 
   useEffect(() => {
     refreshMaterials();
@@ -101,7 +141,7 @@ export default function App() {
     fd.append("tiles_zip", matZip);
     fd.append("name", matName);
 
-    const res = await fetch("/api/materials", { method: "POST", body: fd });
+    const res = await apiFetch("/api/materials", { method: "POST", body: fd });
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -118,7 +158,7 @@ export default function App() {
     const fd = new FormData();
     fd.append("image", targetFile);
 
-    const res = await fetch("/api/targets", { method: "POST", body: fd });
+    const res = await apiFetch("/api/targets", { method: "POST", body: fd });
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -129,7 +169,7 @@ export default function App() {
 
   async function deleteMaterial(id: string) {
     if (!confirm("この素材セットを削除しますか？")) return;
-    const res = await fetch(`/api/materials/${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/materials/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -140,7 +180,7 @@ export default function App() {
 
   async function deleteTarget(id: string) {
     if (!confirm("このターゲット画像を削除しますか？")) return;
-    const res = await fetch(`/api/targets/${id}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/targets/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -169,7 +209,7 @@ export default function App() {
     fd.append("overlay_strength", String(overlayEnabled ? overlayStrength : 0));
 
     setMessage("Creating job...");
-    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    const res = await apiFetch("/api/jobs", { method: "POST", body: fd });
     if (!res.ok) {
       alert(await res.text());
       return;
@@ -186,7 +226,7 @@ export default function App() {
     if (!jobId) return;
 
     const timer = setInterval(async () => {
-      const res = await fetch(`/api/jobs/${jobId}`);
+      const res = await apiFetch(`/api/jobs/${jobId}`);
       if (!res.ok) return;
       const data = await res.json();
       setStatus(data.status);
@@ -248,7 +288,7 @@ export default function App() {
           <div style={{ marginTop: 12 }}>
             <div style={{ color: "#666", marginBottom: 6 }}>プレビュー</div>
             <img
-              src={`/api/targets/${selectedTarget}/file?v=${Date.now()}`}
+              src={apiUrl(`/api/targets/${selectedTarget}/file?sid=${encodeURIComponent(sessionId)}&v=${Date.now()}`)}
               style={{ maxWidth: "100%", borderRadius: 12, border: "1px solid #ddd" }}
             />
           </div>
