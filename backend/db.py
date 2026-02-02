@@ -8,6 +8,11 @@ DEFAULT_DB_PATH = BASE_DIR / "db/pixmo.sqlite3"
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if DATABASE_URL:
+    sqlite_path = None
+    if DATABASE_URL.startswith("sqlite:///") and not DATABASE_URL.startswith("sqlite:////:memory:"):
+        sqlite_path = DATABASE_URL.replace("sqlite:///", "/", 1)
+    if sqlite_path:
+        Path(sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         DATABASE_URL,
         connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
