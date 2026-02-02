@@ -17,3 +17,7 @@ results/
 
 ignore/
 test_pic/
+
+#db.sqlite3
+*.sqlite3
+db/

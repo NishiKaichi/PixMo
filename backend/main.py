@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import threading
 import uuid
@@ -10,30 +11,24 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header,Query
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from PIL import Image
+
+from .db import init_db, SessionLocal
+from .models import Session as SessionModel, Target as TargetModel, Material as MaterialModel, Job as JobModel
+from .cleanup import delete_session_everything, cleanup_expired_sessions
+from .settings import (
+    UPLOADS_DIR, RESULTS_DIR, MATERIALS_DIR, TARGETS_DIR,
+    ALLOWED_EXT, MAX_ZIP_FILES, MAX_SINGLE_FILE_BYTES, MAX_THUMBS_DISK_BYTES,
+    THUMB_SIZE, BIN_Q,
+    SESSION_TTL_MINUTES, CLEANUP_INTERVAL_SECONDS,
+)
 
 app = FastAPI()
 
-BASE_DIR = Path(__file__).resolve().parent
-UPLOADS_DIR = BASE_DIR / "uploads"
-RESULTS_DIR = BASE_DIR / "results"
-MATERIALS_DIR = UPLOADS_DIR / "materials"
-TARGETS_DIR = UPLOADS_DIR / "targets"
-
-for d in [UPLOADS_DIR, RESULTS_DIR, MATERIALS_DIR, TARGETS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-
-# ===== 制限（安全のため。必要なら上げてOK）=====
-ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
-MAX_ZIP_FILES = 200000          # 素材枚数の上限（上げると処理が長くなる）
-MAX_SINGLE_FILE_BYTES = 200 * 1024 * 1024  # 1ファイル200MBまで（メモリ保護）
-MAX_THUMBS_DISK_BYTES = 20 * 1024 * 1024 * 1024  # サムネ保存の上限（20GB）
-THUMB_SIZE = 64                 # 素材の保存サムネサイズ（小さいほど軽い）
-BIN_Q = 8                       # 色量子化幅（8→32bin/chn、軽い）
-
-# ===== ランタイム保持（アプリを閉じるまで保持）=====
+# ===== ランタイム保持（同一サーバプロセス中の高速化用キャッシュ）=====
 jobs: Dict[str, Dict[str, Any]] = {}
 materials: Dict[str, Dict[str, Any]] = {}
 targets: Dict[str, Dict[str, Any]] = {}
@@ -45,11 +40,33 @@ locks = {
 }
 
 
+# ===== セッション =====
+LEGACY_SESSION_ID = "legacy"
+
+def _touch_session(session_id: str) -> None:
+    # last_seen更新＆存在しなければ作る
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        s = db.get(SessionModel, session_id)
+        if s is None:
+            s = SessionModel(id=session_id, created_at=now, last_seen=now)
+            db.add(s)
+        else:
+            s.last_seen = now
+        db.commit()
+
+def get_session_id(x_session_id: str | None = Header(default=None, alias="X-Session-Id")) -> str:
+    sid = x_session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+    return sid
+
+
+# ===== 画像処理 =====
 def avg_rgb(img: Image.Image) -> Tuple[int, int, int]:
     small = img.resize((1, 1), resample=Image.Resampling.BOX)
     r, g, b = small.getpixel((0, 0))
     return int(r), int(g), int(b)
-
 
 @lru_cache(maxsize=4096)
 def _lut(scale_x100: int) -> list[int]:
@@ -62,18 +79,12 @@ def color_match_tile(
     target_avg: Tuple[int, int, int],
     strength: float,
 ) -> Image.Image:
-    """
-    tile_im を target_avg に寄せる（RGBごとのスケール補正）
-    strength: 0.0(無補正)〜1.0(強め)
-    """
     if strength <= 0.0:
         return tile_im
 
-    # ratioを使いつつ強さでブレンド（極端になりすぎないようclamp）
     def blend_scale(t: int, a: int) -> float:
-        ratio = (t + 1) / (a + 1)  # /0回避
+        ratio = (t + 1) / (a + 1)
         s = (1.0 - strength) + strength * ratio
-        # かけすぎ防止（見た目が破綻しやすいので抑える）
         return max(0.6, min(1.6, s))
 
     sr = blend_scale(target_avg[0], tile_avg[0])
@@ -86,14 +97,11 @@ def color_match_tile(
     b = b.point(_lut(int(sb * 100)))
     return Image.merge("RGB", (r, g, b))
 
-
 def color_dist2(a: Tuple[int, int, int], b: Tuple[int, int, int]) -> int:
     return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
 
-
 def bin_key(rgb: Tuple[int, int, int]) -> Tuple[int, int, int]:
     return (rgb[0] // BIN_Q, rgb[1] // BIN_Q, rgb[2] // BIN_Q)
-
 
 def _set(store: str, key: str, **kwargs):
     with locks[store]:
@@ -103,7 +111,6 @@ def _set(store: str, key: str, **kwargs):
             materials[key].update(kwargs)
         elif store == "targets":
             targets[key].update(kwargs)
-
 
 def _get(store: str, key: str) -> Dict[str, Any]:
     with locks[store]:
@@ -117,20 +124,35 @@ def _get(store: str, key: str) -> Dict[str, Any]:
             raise KeyError
         return dict(v)
 
+def _purge_in_memory_by_session(session_id: str) -> None:
+    with locks["targets"]:
+        for k in [k for k, v in targets.items() if v.get("session_id") == session_id]:
+            targets.pop(k, None)
+    with locks["materials"]:
+        for k in [k for k, v in materials.items() if v.get("session_id") == session_id]:
+            materials.pop(k, None)
+    with locks["jobs"]:
+        for k in [k for k, v in jobs.items() if v.get("session_id") == session_id]:
+            jobs.pop(k, None)
 
-def _list(store: str) -> List[Dict[str, Any]]:
-    with locks[store]:
-        if store == "jobs":
-            return [dict(v) for v in jobs.values()]
-        if store == "materials":
-            return [dict(v) for v in materials.values()]
-        return [dict(v) for v in targets.values()]
 
+# ===== Materials preprocess =====
+def _write_material_meta(mat_dir: Path, tile_paths, tile_avgs, index) -> Path:
+    # indexのkeyがtupleなのでJSON化（"r,g,b" 文字列にする）
+    index_json = {f"{k[0]},{k[1]},{k[2]}": v for k, v in index.items()}
+    meta = {
+        "tile_paths": tile_paths,
+        "tile_avgs": tile_avgs,
+        "index": index_json,
+    }
+    meta_path = mat_dir / "meta.json"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False))
+    return meta_path
 
-def preprocess_material_zip(material_id: str, zip_path: Path):
+def preprocess_material_zip(session_id: str, material_id: str, zip_path: Path):
     """
-    ZIP → 画像ごとにサムネ生成 → 平均RGB算出 → 量子化index構築
-    ※ 元画像はフル展開しない（＝展開後サイズ問題を回避）
+    ZIP → サムネ生成 → 平均RGB算出 → 量子化index構築
+    処理後、tiles.zip は削除してストレージを回収する
     """
     try:
         mat_dir = MATERIALS_DIR / material_id
@@ -148,16 +170,18 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
 
         with zipfile.ZipFile(zip_path, "r") as zf:
             infos = [i for i in zf.infolist() if not i.is_dir()]
-
             if len(infos) > MAX_ZIP_FILES:
                 raise ValueError(f"ZIP内ファイル数が多すぎます: {len(infos)} > {MAX_ZIP_FILES}")
 
-            # 進捗用
             total = len(infos) if len(infos) > 0 else 1
 
             for k, info in enumerate(infos):
+                # セッションが消されてたら中断（閉じた/TTL）
+                with SessionLocal() as db:
+                    if db.get(SessionModel, session_id) is None:
+                        return
+
                 name = info.filename.replace("\\", "/")
-                # ZIP Slip対策
                 if name.startswith("/") or ".." in name.split("/"):
                     continue
 
@@ -168,11 +192,9 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
                 if info.file_size > MAX_SINGLE_FILE_BYTES:
                     continue
 
-                # 展開サイズではなく「サムネ保存容量」を上限にする（実質拡張）
                 if written_bytes > MAX_THUMBS_DISK_BYTES:
                     break
 
-                # ZipExtFileはseekできない場合があるのでBytesIO化（サイズ上限でメモリ守る）
                 with zf.open(info, "r") as f:
                     data = f.read()
 
@@ -180,7 +202,6 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
                     with Image.open(io.BytesIO(data)) as im:
                         im = im.convert("RGB")
                         im.thumbnail((THUMB_SIZE, THUMB_SIZE), resample=Image.Resampling.LANCZOS)
-                        # 64x64に揃える（不足分は拡大でOK、目的は特徴量+貼り付け用素材）
                         im = im.resize((THUMB_SIZE, THUMB_SIZE), resample=Image.Resampling.LANCZOS)
 
                         rgb = avg_rgb(im)
@@ -190,7 +211,6 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
                         im.save(out_path, quality=85)
 
                         written_bytes += out_path.stat().st_size
-
                         tile_paths.append(str(out_path))
                         tile_avgs.append(rgb)
 
@@ -203,10 +223,20 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
                     continue
 
                 if k % 200 == 0:
-                    _set("materials", material_id, progress=int((k + 1) / total * 100))
+                    prog = int((k + 1) / total * 100)
+                    _set("materials", material_id, progress=prog)
+                    with SessionLocal() as db:
+                        m = db.get(MaterialModel, material_id)
+                        if m:
+                            m.status = "processing"
+                            m.progress = prog
+                            m.message = "Processing..."
+                            db.commit()
 
         if processed < 10:
             raise ValueError("素材画像が少なすぎます（有効画像が10枚未満）")
+
+        meta_path = _write_material_meta(mat_dir, tile_paths, tile_avgs, index)
 
         _set(
             "materials",
@@ -219,34 +249,55 @@ def preprocess_material_zip(material_id: str, zip_path: Path):
             index=index,
             count=processed,
         )
+
+        # DB更新
+        with SessionLocal() as db:
+            m = db.get(MaterialModel, material_id)
+            if m:
+                m.status = "ready"
+                m.progress = 100
+                m.message = f"Ready: {processed} tiles"
+                m.count = processed
+                m.meta_path = str(meta_path)
+                db.commit()
+
     except Exception as e:
         _set("materials", material_id, status="error", message=str(e))
+        with SessionLocal() as db:
+            m = db.get(MaterialModel, material_id)
+            if m:
+                m.status = "error"
+                m.message = str(e)
+                db.commit()
+
+    finally:
+        # ★ここがストレージ回収の要：tiles.zipは処理後消す（成功/失敗問わず）
+        try:
+            zip_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
+# ===== タイル選択 =====
 def find_best_tile(
     rgb: Tuple[int, int, int],
     tile_avgs: List[Tuple[int, int, int]],
     index: Dict[Tuple[int, int, int], List[int]],
 ) -> int:
-    """
-    量子化ビンから近傍候補を拾い、候補内で正確距離を計算
-    """
     br, bg, bb = bin_key(rgb)
     best_i = 0
     best_d = 10**18
 
-    # 半径を広げながら候補を探す
     for radius in range(0, 6):
         cand: List[int] = []
         for dr in range(-radius, radius + 1):
             for dg in range(-radius, radius + 1):
-                for db in range(-radius, radius + 1):
-                    key = (br + dr, bg + dg, bb + db)
+                for dbb in range(-radius, radius + 1):
+                    key = (br + dr, bg + dg, bb + dbb)
                     if key in index:
                         cand.extend(index[key])
 
         if cand:
-            # 候補の中で最小距離
             for i in cand:
                 d = color_dist2(rgb, tile_avgs[i])
                 if d < best_d:
@@ -254,7 +305,6 @@ def find_best_tile(
                     best_i = i
             return best_i
 
-    # 万一候補が取れない場合（極端に偏ったセット等）、フォールバックで全探索（小規模なら問題なし）
     for i, a in enumerate(tile_avgs):
         d = color_dist2(rgb, a)
         if d < best_d:
@@ -262,57 +312,39 @@ def find_best_tile(
             best_i = i
     return best_i
 
-
 def find_best_tile_avoid(
     rgb: Tuple[int, int, int],
     tile_avgs: List[Tuple[int, int, int]],
     index: Dict[Tuple[int, int, int], List[int]],
     forbidden: set[int],
 ) -> int:
-    """
-    forbidden を避けつつ最近傍タイルを選ぶ（候補の重複を排除して安定化）
-    """
     br, bg, bb = bin_key(rgb)
-
-    # ★重複しない候補集合として集める
     candidates: set[int] = set()
 
-    # 半径を広げて候補を増やす（必要ならradius上げてもOK）
-    for radius in range(0, 9):  # 0..8
+    for radius in range(0, 9):
         for dr in range(-radius, radius + 1):
             for dg in range(-radius, radius + 1):
-                for db in range(-radius, radius + 1):
-                    key = (br + dr, bg + dg, bb + db)
+                for dbb in range(-radius, radius + 1):
+                    key = (br + dr, bg + dg, bb + dbb)
                     if key in index:
-                        # ★setに追加（重複ゼロ）
                         candidates.update(index[key])
-
-        # 候補がある程度集まったら打ち切り（速度優先）
         if len(candidates) >= 2000:
             break
 
     if not candidates:
         return find_best_tile(rgb, tile_avgs, index)
 
-    # 距離でソート（候補が最大2000程度なので全ソートでOK）
     scored = [(color_dist2(rgb, tile_avgs[i]), i) for i in candidates]
     scored.sort(key=lambda x: x[0])
 
-    # 禁止を避けて選ぶ（上位から順に）
     for _, i in scored:
         if i not in forbidden:
             return i
-
-    # 全部禁止なら最良を返す（素材が少なすぎる等）
     return scored[0][1]
-
 
 
 @lru_cache(maxsize=512)
 def load_tile_cached(path_str: str, tile_size: int) -> Image.Image:
-    """
-    サムネ(64x64)→必要tile_sizeへリサイズして返す（LRUでI/O削減）
-    """
     p = Path(path_str)
     with Image.open(p) as im:
         im = im.convert("RGB")
@@ -329,7 +361,7 @@ def build_mosaic_exact_size(
     job_id: str,
     no_repeat_k: int,
     color_strength: float,
-    overlay_strength: float,  
+    overlay_strength: float,
 ):
     _set("jobs", job_id, status="running", progress=0, message="Loading target...")
 
@@ -359,7 +391,7 @@ def build_mosaic_exact_size(
         y1 = min(y0 + tile_size, H)
         region_h = y1 - y0
 
-        left_tile = None  # 行が変わるのでリセット
+        left_tile = None
 
         for gx in range(grid_w):
             x0 = gx * tile_size
@@ -379,11 +411,9 @@ def build_mosaic_exact_size(
 
             tile_im = load_tile_cached(tile_paths[best_i], tile_size)
 
-            # 色補正（忠実度UP）
             if color_strength > 0.0:
                 tile_im = color_match_tile(tile_im, tile_avgs[best_i], rgb, color_strength)
 
-            # 端の切り落とし対応
             if region_w != tile_size or region_h != tile_size:
                 tile_crop = tile_im.crop((0, 0, region_w, region_h))
                 out.paste(tile_crop, (x0, y0))
@@ -398,19 +428,17 @@ def build_mosaic_exact_size(
             done += 1
 
         _set("jobs", job_id, progress=int(done / total_cells * 99))
+
     if overlay_strength > 0.0:
         _set("jobs", job_id, message="Blending overlay...", progress=99)
-        out = Image.blend(out, target, overlay_strength)  # (1-a)*out + a*target
+        out = Image.blend(out, target, overlay_strength)
 
     _set("jobs", job_id, message="Saving...", progress=99)
     out.save(out_path, quality=92)
     _set("jobs", job_id, status="done", progress=100, message="Done!", result_path=str(out_path))
 
 
-
-
-def run_job(job_id: str, target_path: Path, material_id: str, tile_size: int, no_repeat_k: int, color_strength: float, overlay_strength: float):
-
+def run_job(session_id: str, job_id: str, target_path: Path, material_id: str, tile_size: int, no_repeat_k: int, color_strength: float, overlay_strength: float):
     try:
         material = _get("materials", material_id)
         if material["status"] != "ready":
@@ -428,23 +456,71 @@ def run_job(job_id: str, target_path: Path, material_id: str, tile_size: int, no
             overlay_strength=overlay_strength,
         )
 
+        with SessionLocal() as db:
+            j = db.get(JobModel, job_id)
+            if j:
+                j.status = "done"
+                j.progress = 100
+                j.message = "Done!"
+                j.result_path = str(out_path)
+                db.commit()
+
     except Exception as e:
         _set("jobs", job_id, status="error", message=str(e))
+        with SessionLocal() as db:
+            j = db.get(JobModel, job_id)
+            if j:
+                j.status = "error"
+                j.message = str(e)
+                db.commit()
 
 
 # ================== API ==================
+class SessionCloseRequest(BaseModel):
+    session_id: str
+
+@app.on_event("startup")
+def _startup():
+    init_db()
+
+    # TTL cleanup worker
+    def worker():
+        while True:
+            try:
+                cleanup_expired_sessions(SESSION_TTL_MINUTES)
+            except Exception:
+                pass
+            import time
+            time.sleep(CLEANUP_INTERVAL_SECONDS)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
 
 
-# ---- Targets（再現画像）保持 ----
+@app.post("/api/session/close")
+def close_session(body: SessionCloseRequest):
+    # DB + ファイル削除
+    delete_session_everything(body.session_id)
+    # メモリキャッシュも掃除
+    _purge_in_memory_by_session(body.session_id)
+    load_tile_cached.cache_clear()
+    return {"ok": True}
 
+
+# ---- Targets ----
 @app.post("/api/targets")
 async def upload_target(
     image: UploadFile = File(...),
+    session_id: str = Header(default=None, alias="X-Session-Id"),
 ):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
     ext = Path(image.filename or "").suffix.lower()
     if ext not in ALLOWED_EXT:
         raise HTTPException(400, "対応形式は jpg/png/webp です")
@@ -460,13 +536,24 @@ async def upload_target(
     finally:
         image.file.close()
 
-    # サイズ取得
     with Image.open(path) as im:
         w, h = im.size
+
+    with SessionLocal() as db:
+        db.merge(TargetModel(
+            id=target_id,
+            session_id=sid,
+            name=image.filename or f"target_{target_id}",
+            path=str(path),
+            width=w,
+            height=h,
+        ))
+        db.commit()
 
     with locks["targets"]:
         targets[target_id] = {
             "id": target_id,
+            "session_id": sid,
             "name": image.filename or f"target_{target_id}",
             "path": str(path),
             "width": w,
@@ -477,34 +564,59 @@ async def upload_target(
 
 
 @app.get("/api/targets")
-def list_targets():
-    return {"targets": _list("targets")}
+def list_targets(session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    with SessionLocal() as db:
+        rows = db.query(TargetModel).filter(TargetModel.session_id == sid).all()
+
+    return {"targets": [
+        {"id": r.id, "name": r.name, "path": r.path, "width": r.width, "height": r.height}
+        for r in rows
+    ]}
 
 
 @app.get("/api/targets/{target_id}/file")
-def get_target_file(target_id: str):
-    try:
-        t = _get("targets", target_id)
-    except KeyError:
-        raise HTTPException(404, "target not found")
-    p = Path(t["path"])
+def get_target_file(
+    target_id: str,
+    sid: str | None = Query(default=None),
+    session_id: str = Header(default=None, alias="X-Session-Id"),
+):
+    effective_sid = sid or session_id or LEGACY_SESSION_ID
+    _touch_session(effective_sid)
+
+    with SessionLocal() as db:
+        r = db.query(TargetModel).filter(
+            TargetModel.id == target_id,
+            TargetModel.session_id == effective_sid
+        ).first()
+        if not r:
+            raise HTTPException(404, "target not found")
+
+    p = Path(r.path)
     if not p.exists():
         raise HTTPException(404, "file missing")
-    # 拡張子でざっくり
     return FileResponse(p)
 
 
-@app.delete("/api/targets/{target_id}")
-def delete_target(target_id: str):
-    try:
-        t = _get("targets", target_id)
-    except KeyError:
-        raise HTTPException(404, "target not found")
 
-    # ファイル削除
-    p = Path(t["path"])
-    if p.exists():
-        shutil.rmtree(p.parent, ignore_errors=True)
+@app.delete("/api/targets/{target_id}")
+def delete_target(target_id: str, session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    with SessionLocal() as db:
+        r = db.query(TargetModel).filter(TargetModel.id == target_id, TargetModel.session_id == sid).first()
+        if not r:
+            raise HTTPException(404, "target not found")
+
+        p = Path(r.path)
+        if p.exists():
+            shutil.rmtree(p.parent, ignore_errors=True)
+
+        db.delete(r)
+        db.commit()
 
     with locks["targets"]:
         targets.pop(target_id, None)
@@ -512,13 +624,16 @@ def delete_target(target_id: str):
     return {"ok": True}
 
 
-# ---- Materials（素材セット）保持 ----
-
+# ---- Materials ----
 @app.post("/api/materials")
 async def upload_materials(
     tiles_zip: UploadFile = File(...),
     name: str = Form("materials"),
+    session_id: str = Header(default=None, alias="X-Session-Id"),
 ):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
     material_id = uuid.uuid4().hex
     mdir = MATERIALS_DIR / material_id
     mdir.mkdir(parents=True, exist_ok=True)
@@ -530,67 +645,93 @@ async def upload_materials(
     finally:
         tiles_zip.file.close()
 
+    with SessionLocal() as db:
+        db.merge(MaterialModel(
+            id=material_id,
+            session_id=sid,
+            name=name,
+            status="queued",
+            progress=0,
+            message="Queued",
+            count=0,
+            zip_path=str(zip_path),
+            meta_path=None,
+        ))
+        db.commit()
+
     with locks["materials"]:
         materials[material_id] = {
             "id": material_id,
+            "session_id": sid,
             "name": name,
             "status": "queued",
             "progress": 0,
             "message": "Queued",
             "count": 0,
-            # ready後に入る
             "tile_paths": [],
             "tile_avgs": [],
             "index": {},
         }
 
-    t = threading.Thread(target=preprocess_material_zip, args=(material_id, zip_path), daemon=True)
+    t = threading.Thread(target=preprocess_material_zip, args=(sid, material_id, zip_path), daemon=True)
     t.start()
 
     return {"material_id": material_id}
 
 
 @app.get("/api/materials")
-def list_materials():
-    ms = _list("materials")
-    # 重いデータ（tile_paths等）は返さない
-    slim = []
-    for m in ms:
-        slim.append({
-            "id": m["id"],
-            "name": m["name"],
-            "status": m["status"],
-            "progress": m.get("progress", 0),
-            "message": m.get("message", ""),
-            "count": m.get("count", 0),
-        })
-    return {"materials": slim}
+def list_materials(session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    with SessionLocal() as db:
+        rows = db.query(MaterialModel).filter(MaterialModel.session_id == sid).all()
+
+    return {"materials": [
+        {
+            "id": r.id,
+            "name": r.name,
+            "status": r.status,
+            "progress": r.progress,
+            "message": r.message,
+            "count": r.count,
+        }
+        for r in rows
+    ]}
 
 
 @app.get("/api/materials/{material_id}")
-def get_material(material_id: str):
-    try:
-        m = _get("materials", material_id)
-    except KeyError:
-        raise HTTPException(404, "material not found")
+def get_material(material_id: str, session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    with SessionLocal() as db:
+        r = db.query(MaterialModel).filter(MaterialModel.id == material_id, MaterialModel.session_id == sid).first()
+        if not r:
+            raise HTTPException(404, "material not found")
+
     return {
-        "id": m["id"],
-        "name": m["name"],
-        "status": m["status"],
-        "progress": m.get("progress", 0),
-        "message": m.get("message", ""),
-        "count": m.get("count", 0),
+        "id": r.id,
+        "name": r.name,
+        "status": r.status,
+        "progress": r.progress,
+        "message": r.message,
+        "count": r.count,
     }
 
 
 @app.delete("/api/materials/{material_id}")
-def delete_material(material_id: str):
-    try:
-        m = _get("materials", material_id)
-    except KeyError:
-        raise HTTPException(404, "material not found")
+def delete_material(material_id: str, session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
 
-    # サムネ・zip含め削除
+    with SessionLocal() as db:
+        r = db.query(MaterialModel).filter(MaterialModel.id == material_id, MaterialModel.session_id == sid).first()
+        if not r:
+            raise HTTPException(404, "material not found")
+        db.delete(r)
+        db.commit()
+
     shutil.rmtree(MATERIALS_DIR / material_id, ignore_errors=True)
     load_tile_cached.cache_clear()
 
@@ -601,7 +742,6 @@ def delete_material(material_id: str):
 
 
 # ---- Jobs ----
-
 @app.post("/api/jobs")
 async def create_job(
     target_id: str = Form(...),
@@ -610,32 +750,66 @@ async def create_job(
     no_repeat_k: int = Form(30),
     color_strength: float = Form(0.35),
     overlay_strength: float = Form(0.0),
+    session_id: str = Header(default=None, alias="X-Session-Id"),
 ):
-    if tile_size < 8 or tile_size > 128:
-        raise HTTPException(400, "tile_sizeは8〜128の範囲にしてください")
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    if tile_size < 8 or tile_size > 256:
+        raise HTTPException(400, "tile_sizeは8〜256の範囲にしてください")
     if no_repeat_k < 0 or no_repeat_k > 500:
         raise HTTPException(400, "no_repeat_kは0〜500の範囲にしてください")
     if color_strength < 0.0 or color_strength > 1.0:
         raise HTTPException(400, "color_strengthは0.0〜1.0の範囲にしてください")
     if overlay_strength < 0.0 or overlay_strength > 1.0:
         raise HTTPException(400, "overlay_strengthは0.0〜1.0の範囲にしてください")
-    try:
-        t = _get("targets", target_id)
-    except KeyError:
-        raise HTTPException(404, "target not found")
 
-    try:
-        m = _get("materials", material_id)
-    except KeyError:
-        raise HTTPException(404, "material not found")
+    # DBで所有確認
+    with SessionLocal() as db:
+        t = db.query(TargetModel).filter(TargetModel.id == target_id, TargetModel.session_id == sid).first()
+        if not t:
+            raise HTTPException(404, "target not found")
 
-    if m["status"] != "ready":
-        raise HTTPException(400, f"material is not ready: {m['status']}")
+        m = db.query(MaterialModel).filter(MaterialModel.id == material_id, MaterialModel.session_id == sid).first()
+        if not m:
+            raise HTTPException(404, "material not found")
+        if m.status != "ready":
+            raise HTTPException(400, f"material is not ready: {m.status}")
+
+    # メモリキャッシュに素材が無ければmeta.jsonから復元
+    try:
+        mat_cache = _get("materials", material_id)
+    except KeyError:
+        mat_dir = MATERIALS_DIR / material_id
+        meta_path = mat_dir / "meta.json"
+        if not meta_path.exists():
+            raise HTTPException(400, "material cache missing (please re-upload materials)")
+        meta = json.loads(meta_path.read_text())
+        tile_paths = meta["tile_paths"]
+        tile_avgs = [tuple(x) for x in meta["tile_avgs"]]
+        index = {}
+        for k, v in meta["index"].items():
+            r, g, b = k.split(",")
+            index[(int(r), int(g), int(b))] = v
+        with locks["materials"]:
+            materials[material_id] = {
+                "id": material_id,
+                "session_id": sid,
+                "name": m.name if "m" in locals() else "materials",
+                "status": "ready",
+                "progress": 100,
+                "message": "Ready (restored)",
+                "count": len(tile_paths),
+                "tile_paths": tile_paths,
+                "tile_avgs": tile_avgs,
+                "index": index,
+            }
 
     job_id = uuid.uuid4().hex
     with locks["jobs"]:
         jobs[job_id] = {
             "id": job_id,
+            "session_id": sid,
             "status": "queued",
             "progress": 0,
             "message": "Queued",
@@ -644,46 +818,61 @@ async def create_job(
             "material_id": material_id,
         }
 
-    target_path = Path(t["path"])
+    with SessionLocal() as db:
+        db.merge(JobModel(
+            id=job_id,
+            session_id=sid,
+            status="queued",
+            progress=0,
+            message="Queued",
+            result_path=None,
+            target_id=target_id,
+            material_id=material_id,
+        ))
+        db.commit()
+
+    target_path = Path(t.path)
 
     th = threading.Thread(
         target=run_job,
-        args=(job_id, target_path, material_id, tile_size, no_repeat_k, color_strength, overlay_strength),
+        args=(sid, job_id, target_path, material_id, tile_size, no_repeat_k, color_strength, overlay_strength),
         daemon=True
     )
-
     th.start()
-
 
     return {"job_id": job_id}
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
-    try:
-        j = _get("jobs", job_id)
-    except KeyError:
-        raise HTTPException(404, "job not found")
-    return {
-        "job_id": j["id"],
-        "status": j["status"],
-        "progress": j["progress"],
-        "message": j["message"],
-    }
+def get_job(job_id: str, session_id: str = Header(default=None, alias="X-Session-Id")):
+    sid = session_id or LEGACY_SESSION_ID
+    _touch_session(sid)
+
+    with SessionLocal() as db:
+        j = db.query(JobModel).filter(JobModel.id == job_id, JobModel.session_id == sid).first()
+        if not j:
+            raise HTTPException(404, "job not found")
+    return {"job_id": j.id, "status": j.status, "progress": j.progress, "message": j.message}
 
 
 @app.get("/api/jobs/{job_id}/result")
-def get_result(job_id: str):
-    try:
-        j = _get("jobs", job_id)
-    except KeyError:
-        raise HTTPException(404, "job not found")
+def get_result(
+    job_id: str,
+    sid: str | None = Query(default=None),
+    session_id: str = Header(default=None, alias="X-Session-Id"),
+):
+    effective_sid = sid or session_id or LEGACY_SESSION_ID
+    _touch_session(effective_sid)
 
-    if j["status"] != "done" or not j.get("result_path"):
-        raise HTTPException(404, "result not ready")
+    with SessionLocal() as db:
+        j = db.query(JobModel).filter(
+            JobModel.id == job_id,
+            JobModel.session_id == effective_sid
+        ).first()
+        if not j or j.status != "done" or not j.result_path:
+            raise HTTPException(404, "result not ready")
 
-    p = Path(j["result_path"])
+    p = Path(j.result_path)
     if not p.exists():
         raise HTTPException(404, "result file missing")
-
     return FileResponse(p, media_type="image/jpeg", filename=f"{job_id}.jpg")
