@@ -49,26 +49,22 @@ export default function App() {
     return fetch(input, { ...init, headers });
   }
 
-  // ---- Libraries ----
   const [materials, setMaterials] = useState<Material[]>([]);
   const [targets, setTargets] = useState<Target[]>([]);
 
   const [selectedMaterial, setSelectedMaterial] = useState<string>("");
   const [selectedTarget, setSelectedTarget] = useState<string>("");
 
-  // Upload inputs
   const [matZip, setMatZip] = useState<File | null>(null);
   const [matName, setMatName] = useState<string>("materials");
   const [targetFile, setTargetFile] = useState<File | null>(null);
 
-  // Job params
   const [tileSize, setTileSize] = useState<number>(64);
   const [noRepeatK, setNoRepeatK] = useState<number>(15);
   const [colorStrength, setColorStrength] = useState<number>(0.35);
   const [overlayStrength, setOverlayStrength] = useState<number>(0.2);
   const [overlayEnabled, setOverlayEnabled] = useState<boolean>(false);
 
-  // Job state
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [progress, setProgress] = useState<number>(0);
@@ -130,7 +126,7 @@ export default function App() {
 
   async function uploadMaterials() {
     if (!matZip) {
-      alert("??ZIP????????");
+      alert("素材ZIPを選んでください");
       return;
     }
     const fd = new FormData();
@@ -148,7 +144,7 @@ export default function App() {
 
   async function uploadTarget() {
     if (!targetFile) {
-      alert("???????????????");
+      alert("ターゲット画像を選んでください");
       return;
     }
     const fd = new FormData();
@@ -164,7 +160,7 @@ export default function App() {
   }
 
   async function deleteMaterial(id: string) {
-    if (!confirm("???????????????")) return;
+    if (!confirm("この素材セットを削除しますか？")) return;
     const res = await apiFetch(`/api/materials/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
@@ -175,7 +171,7 @@ export default function App() {
   }
 
   async function deleteTarget(id: string) {
-    if (!confirm("?????????????????")) return;
+    if (!confirm("このターゲット画像を削除しますか？")) return;
     const res = await apiFetch(`/api/targets/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
@@ -187,12 +183,12 @@ export default function App() {
 
   async function startJob() {
     if (!selectedTarget || !selectedMaterial) {
-      alert("????????????????????");
+      alert("ターゲットと素材セットを選択してください");
       return;
     }
     const mat = materials.find((m) => m.id === selectedMaterial);
     if (mat && mat.status !== "ready") {
-      alert("????????????processing/error?");
+      alert("素材セットが準備中です（processing/error）");
       return;
     }
 
@@ -245,21 +241,21 @@ export default function App() {
           <div className="pill">Pixel Mosaic Studio</div>
           <h1>PixMo</h1>
           <p>
-            ????????????????????????????????????????
-            ??????????
+            写真を素材タイルで再構成し、密度の高いフォトモザイクを生成します。大きな画像ほど
+            精細に仕上がります。
           </p>
           <div className="hero-actions">
             <button
               className="btn primary"
               onClick={() => document.getElementById("target-panel")?.scrollIntoView({ behavior: "smooth" })}
             >
-              ?????
+              画像を選ぶ
             </button>
             <button
               className="btn ghost"
               onClick={() => document.getElementById("job-panel")?.scrollIntoView({ behavior: "smooth" })}
             >
-              ?????
+              生成へ進む
             </button>
           </div>
         </div>
@@ -274,8 +270,8 @@ export default function App() {
         <div className="panel" id="target-panel">
           <div className="panel-header">
             <div>
-              <h2>1) ???????</h2>
-              <p>?????????????????????</p>
+              <h2>1) ターゲット画像</h2>
+              <p>モザイク化する元画像をアップロードします。</p>
             </div>
             <span className="badge">PNG / JPG / WEBP</span>
           </div>
@@ -284,13 +280,13 @@ export default function App() {
             <div className="row">
               <label className="file">
                 <input type="file" accept="image/*" onChange={(e) => setTargetFile(e.target.files?.[0] ?? null)} />
-                <span>{targetFile ? targetFile.name : "???????"}</span>
+                <span>{targetFile ? targetFile.name : "ファイルを選択"}</span>
               </label>
-              <button className="btn" onClick={uploadTarget}>??????</button>
+              <button className="btn" onClick={uploadTarget}>アップロード</button>
             </div>
 
             <div className="list">
-              {targets.length === 0 && <div className="muted">?????????????</div>}
+              {targets.length === 0 && <div className="muted">まだターゲットがありません</div>}
               {targets.map((t) => (
                 <label key={t.id} className={`list-item ${selectedTarget === t.id ? "active" : ""}`}>
                   <input
@@ -301,14 +297,14 @@ export default function App() {
                   />
                   <span className="list-title">{t.name}</span>
                   <span className="list-meta">{t.width} ? {t.height}</span>
-                  <button className="btn small" onClick={() => deleteTarget(t.id)}>??</button>
+                  <button className="btn small" onClick={() => deleteTarget(t.id)}>削除</button>
                 </label>
               ))}
             </div>
 
             {selectedTarget && (
               <div className="preview">
-                <div className="preview-title">?????</div>
+                <div className="preview-title">プレビュー</div>
                 <img
                   src={apiUrl(`/api/targets/${selectedTarget}/file?sid=${encodeURIComponent(sessionId)}&v=${Date.now()}`)}
                   alt="target preview"
@@ -321,8 +317,8 @@ export default function App() {
         <div className="panel">
           <div className="panel-header">
             <div>
-              <h2>2) ?????</h2>
-              <p>?????????ZIP????????????</p>
+              <h2>2) 素材セット</h2>
+              <p>タイルに使う画像をZIPでまとめてアップロード。</p>
             </div>
             <span className="badge">ZIP</span>
           </div>
@@ -333,17 +329,17 @@ export default function App() {
                 className="input"
                 value={matName}
                 onChange={(e) => setMatName(e.target.value)}
-                placeholder="??????"
+                placeholder="素材セット名"
               />
               <label className="file">
                 <input type="file" accept=".zip" onChange={(e) => setMatZip(e.target.files?.[0] ?? null)} />
-                <span>{matZip ? matZip.name : "ZIP???"}</span>
+                <span>{matZip ? matZip.name : "ZIPを選択"}</span>
               </label>
-              <button className="btn" onClick={uploadMaterials}>??????</button>
+              <button className="btn" onClick={uploadMaterials}>アップロード</button>
             </div>
 
             <div className="list">
-              {materials.length === 0 && <div className="muted">?????????????</div>}
+              {materials.length === 0 && <div className="muted">まだ素材セットがありません</div>}
               {materials.map((m) => (
                 <label key={m.id} className={`list-item ${selectedMaterial === m.id ? "active" : ""}`}>
                   <input
@@ -357,7 +353,7 @@ export default function App() {
                     [{m.status}] {m.count ? `tiles=${m.count}` : ""}{m.status !== "ready" ? ` / ${m.progress}%` : ""}
                   </span>
                   <span className="list-hint">{m.message}</span>
-                  <button className="btn small" onClick={() => deleteMaterial(m.id)}>??</button>
+                  <button className="btn small" onClick={() => deleteMaterial(m.id)}>削除</button>
                 </label>
               ))}
             </div>
@@ -368,8 +364,8 @@ export default function App() {
       <section className="panel" id="job-panel">
         <div className="panel-header">
           <div>
-            <h2>3) ????</h2>
-            <p>????????????????????????</p>
+            <h2>3) 生成設定</h2>
+            <p>ディテールと雰囲気を調整して、理想のモザイクへ。</p>
           </div>
           <span className="badge">Mosaic</span>
         </div>
@@ -378,7 +374,7 @@ export default function App() {
           <div className="controls">
             <div className="control">
               <div className="control-head">
-                <span>??????</span>
+                <span>タイルサイズ</span>
                 <b>{tileSize}px</b>
               </div>
               <input
@@ -389,12 +385,12 @@ export default function App() {
                 value={tileSize}
                 onChange={(e) => setTileSize(Number(e.target.value))}
               />
-              <div className="helper">???????????????????????</div>
+              <div className="helper">小さくすると精細になりますが時間がかかります。</div>
             </div>
 
             <div className="control">
               <div className="control-head">
-                <span>????</span>
+                <span>連続回避</span>
                 <b>{noRepeatK}</b>
               </div>
               <input
@@ -405,12 +401,12 @@ export default function App() {
                 value={noRepeatK}
                 onChange={(e) => setNoRepeatK(Number(e.target.value))}
               />
-              <div className="helper">??????????????????</div>
+              <div className="helper">同じタイルが近くに並ぶのを防ぎます。</div>
             </div>
 
             <div className="control">
               <div className="control-head">
-                <span>????</span>
+                <span>色合わせ</span>
                 <b>{colorStrength.toFixed(2)}</b>
               </div>
               <input
@@ -421,12 +417,12 @@ export default function App() {
                 value={colorStrength}
                 onChange={(e) => setColorStrength(Number(e.target.value))}
               />
-              <div className="helper">??????????????????</div>
+              <div className="helper">素材の色味をターゲットに近づけます。</div>
             </div>
 
             <div className="control">
               <div className="control-head">
-                <span>?????????</span>
+                <span>元画像オーバーレイ</span>
                 <label className="switch">
                   <input
                     type="checkbox"
@@ -445,14 +441,14 @@ export default function App() {
                 disabled={!overlayEnabled}
                 onChange={(e) => setOverlayStrength(Number(e.target.value))}
               />
-              <div className="helper">ON????????????????</div>
+              <div className="helper">ONにすると元画像の輪郭が残ります。</div>
             </div>
           </div>
 
           <div className="row">
-            <button className="btn primary" onClick={startJob}>??????</button>
+            <button className="btn primary" onClick={startJob}>生成スタート</button>
             {selectedTargetObj && (
-              <span className="muted">???: {selectedTargetObj.width} ? {selectedTargetObj.height}</span>
+              <span className="muted">サイズ: {selectedTargetObj.width} ? {selectedTargetObj.height}</span>
             )}
           </div>
 
@@ -480,10 +476,10 @@ export default function App() {
           <div className="panel-header">
             <div>
               <h2>Result</h2>
-              <p>????????????????</p>
+              <p>生成結果をダウンロードできます。</p>
             </div>
             <a className="btn ghost" href={resultUrl} download>
-              ??????
+              ダウンロード
             </a>
           </div>
           <div className="panel-body">
