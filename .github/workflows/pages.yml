@@ -37,6 +37,7 @@ jobs:
       - name: Build
         env:
           BASE_PATH: /PixMo/
+          VITE_API_BASE: https://pixmo-api-440c866f2485.herokuapp.com
         run: npm run build
 
       - name: SPA fallback
