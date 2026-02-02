@@ -1,8 +1,10 @@
 from pathlib import Path
+import os
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOADS_DIR = BASE_DIR / "uploads"
-RESULTS_DIR = BASE_DIR / "results"
+DATA_DIR = Path(os.getenv("PIXMO_DATA_DIR", str(BASE_DIR)))
+UPLOADS_DIR = Path(os.getenv("UPLOADS_DIR", str(DATA_DIR / "uploads")))
+RESULTS_DIR = Path(os.getenv("RESULTS_DIR", str(DATA_DIR / "results")))
 MATERIALS_DIR = UPLOADS_DIR / "materials"
 TARGETS_DIR = UPLOADS_DIR / "targets"
 
