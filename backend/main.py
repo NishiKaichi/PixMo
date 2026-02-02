@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header,Query
+from fastapi.middleware.cors import CORSMiddleware
+import os
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from PIL import Image
@@ -27,6 +29,15 @@ from .settings import (
 )
 
 app = FastAPI()
+
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "https://NishiKaichi.github.io").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ===== ランタイム保持（同一サーバプロセス中の高速化用キャッシュ）=====
 jobs: Dict[str, Dict[str, Any]] = {}
