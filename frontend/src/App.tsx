@@ -10,7 +10,6 @@ function apiUrl(path: string): string {
   return `${base}${path}`;
 }
 
-
 function getOrCreateSessionId(): string {
   const existing = localStorage.getItem(SESSION_KEY);
   if (existing) return existing;
@@ -60,7 +59,6 @@ export default function App() {
   // Upload inputs
   const [matZip, setMatZip] = useState<File | null>(null);
   const [matName, setMatName] = useState<string>("materials");
-
   const [targetFile, setTargetFile] = useState<File | null>(null);
 
   // Job params
@@ -85,7 +83,6 @@ export default function App() {
     const res = await apiFetch("/api/materials");
     const data = await res.json();
     setMaterials(data.materials);
-    // 初期選択
     if (!selectedMaterial && data.materials?.length) {
       const ready = data.materials.find((m: Material) => m.status === "ready") || data.materials[0];
       setSelectedMaterial(ready.id);
@@ -119,7 +116,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 素材がprocessingなら定期更新（進捗表示用）
   useEffect(() => {
     const hasProcessing = materials.some((m) => m.status === "queued" || m.status === "processing");
     if (!hasProcessing) return;
@@ -134,7 +130,7 @@ export default function App() {
 
   async function uploadMaterials() {
     if (!matZip) {
-      alert("素材ZIPを選んでください");
+      alert("??ZIP????????");
       return;
     }
     const fd = new FormData();
@@ -152,7 +148,7 @@ export default function App() {
 
   async function uploadTarget() {
     if (!targetFile) {
-      alert("ターゲット画像を選んでください");
+      alert("???????????????");
       return;
     }
     const fd = new FormData();
@@ -168,7 +164,7 @@ export default function App() {
   }
 
   async function deleteMaterial(id: string) {
-    if (!confirm("この素材セットを削除しますか？")) return;
+    if (!confirm("???????????????")) return;
     const res = await apiFetch(`/api/materials/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
@@ -179,7 +175,7 @@ export default function App() {
   }
 
   async function deleteTarget(id: string) {
-    if (!confirm("このターゲット画像を削除しますか？")) return;
+    if (!confirm("?????????????????")) return;
     const res = await apiFetch(`/api/targets/${id}`, { method: "DELETE" });
     if (!res.ok) {
       alert(await res.text());
@@ -191,12 +187,12 @@ export default function App() {
 
   async function startJob() {
     if (!selectedTarget || !selectedMaterial) {
-      alert("ターゲットと素材セットを選んでください");
+      alert("????????????????????");
       return;
     }
     const mat = materials.find((m) => m.id === selectedMaterial);
     if (mat && mat.status !== "ready") {
-      alert("素材セットがreadyではありません（処理中/エラーの可能性）");
+      alert("????????????processing/error?");
       return;
     }
 
@@ -221,7 +217,6 @@ export default function App() {
     setMessage("Queued");
   }
 
-  // ジョブ進捗ポーリング
   useEffect(() => {
     if (!jobId) return;
 
@@ -244,190 +239,203 @@ export default function App() {
   const selectedTargetObj = targets.find((t) => t.id === selectedTarget);
 
   return (
-    <div style={{ maxWidth: 980, margin: "0 auto", padding: 24, fontFamily: "system-ui" }}>
-      <h1 style={{ marginBottom: 6 }}>PixMo</h1>
-      <p style={{ marginTop: 0, color: "#666" }}>
-        素材セット/ターゲットを登録して，選んで生成（アプリ起動中は登録された画像が保持されます．）
-      </p>
-
-      {/* Targets */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, marginBottom: 14 }}>
-        <h2 style={{ marginTop: 0 }}>1) ターゲット画像（登録・選択）</h2>
-
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <input type="file" accept="image/*" onChange={(e) => setTargetFile(e.target.files?.[0] ?? null)} />
-          <button onClick={uploadTarget} style={{ padding: "8px 12px", borderRadius: 10 }}>
-            登録
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          {targets.length === 0 && <div style={{ color: "#888" }}>まだターゲットがありません</div>}
-          {targets.map((t) => (
-            <label key={t.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input
-                type="radio"
-                name="target"
-                checked={selectedTarget === t.id}
-                onChange={() => setSelectedTarget(t.id)}
-              />
-              <span>
-                {t.name} <span style={{ color: "#666" }}>({t.width}×{t.height})</span>
-              </span>
-              <button
-                onClick={() => deleteTarget(t.id)}
-                style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 10 }}
-              >
-                削除
-              </button>
-            </label>
-          ))}
-        </div>
-
-        {selectedTarget && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ color: "#666", marginBottom: 6 }}>プレビュー</div>
-            <img
-              src={apiUrl(`/api/targets/${selectedTarget}/file?sid=${encodeURIComponent(sessionId)}&v=${Date.now()}`)}
-              style={{ maxWidth: "100%", borderRadius: 12, border: "1px solid #ddd" }}
-            />
+    <div className="page">
+      <header className="hero">
+        <div className="hero-content">
+          <div className="pill">Pixel Mosaic Studio</div>
+          <h1>PixMo</h1>
+          <p>
+            ????????????????????????????????????????
+            ??????????
+          </p>
+          <div className="hero-actions">
+            <button
+              className="btn primary"
+              onClick={() => document.getElementById("target-panel")?.scrollIntoView({ behavior: "smooth" })}
+            >
+              ?????
+            </button>
+            <button
+              className="btn ghost"
+              onClick={() => document.getElementById("job-panel")?.scrollIntoView({ behavior: "smooth" })}
+            >
+              ?????
+            </button>
           </div>
-        )}
-      </div>
-
-      {/* Materials */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16, marginBottom: 14 }}>
-        <h2 style={{ marginTop: 0 }}>2) 素材セット（登録・選択）</h2>
-
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <input
-            value={matName}
-            onChange={(e) => setMatName(e.target.value)}
-            placeholder="素材セット名"
-            style={{ padding: 8, borderRadius: 10, border: "1px solid #ccc" }}
-          />
-          <input type="file" accept=".zip" onChange={(e) => setMatZip(e.target.files?.[0] ?? null)} />
-          <button onClick={uploadMaterials} style={{ padding: "8px 12px", borderRadius: 10 }}>
-            登録（ZIP）
-          </button>
         </div>
-
-        <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-          {materials.length === 0 && <div style={{ color: "#888" }}>まだ素材セットがありません</div>}
-
-          {materials.map((m) => (
-            <label key={m.id} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input
-                type="radio"
-                name="material"
-                checked={selectedMaterial === m.id}
-                onChange={() => setSelectedMaterial(m.id)}
-              />
-              <span>
-                {m.name}{" "}
-                <span style={{ color: "#666" }}>
-                  [{m.status}] {m.count ? `tiles=${m.count}` : ""}
-                  {m.status !== "ready" ? ` / ${m.progress}%` : ""}
-                </span>
-              </span>
-              <span style={{ color: "#888", marginLeft: 8 }}>{m.message}</span>
-
-              <button
-                onClick={() => deleteMaterial(m.id)}
-                style={{ marginLeft: "auto", padding: "6px 10px", borderRadius: 10 }}
-              >
-                削除
-              </button>
-            </label>
-          ))}
+        <div className="hero-art" aria-hidden>
+          <div className="art-grid" />
+          <div className="art-orb" />
+          <div className="art-frame" />
         </div>
-      </div>
+      </header>
 
-      {/* Job */}
-      <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 16 }}>
-        <h2 style={{ marginTop: 0 }}>3) 生成</h2>
-
-        <div style={{ display: "grid", gap: 14 }}>
-          {/* タイルサイズ（スライダー） */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>タイルサイズ</span>
-              <b>{tileSize}px</b>
+      <section className="grid">
+        <div className="panel" id="target-panel">
+          <div className="panel-header">
+            <div>
+              <h2>1) ???????</h2>
+              <p>?????????????????????</p>
             </div>
-            <input
-              type="range"
-              min={8}
-              max={256}
-              step={1}
-              value={tileSize}
-              onChange={(e) => setTileSize(Number(e.target.value))}
-            />
-            <div style={{ color: "#666", fontSize: 12 }}>
-              タイルサイズは64px以上を推奨しています（小さいほど画像の生成に時間がかかります）
-            </div>
+            <span className="badge">PNG / JPG / WEBP</span>
           </div>
 
-          {/* 連続抑制K（スライダー） */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>同一タイルの連続抑制</span>
-              <b>{noRepeatK}</b>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={30}
-              step={1}
-              value={noRepeatK}
-              onChange={(e) => setNoRepeatK(Number(e.target.value))}
-            />
-            <div style={{ color: "#666", fontSize: 12 }}>
-              同一タイルの連続使用を調整します
-              適切なタイルが見つからない場合連続抑制をしていても同一タイルが使用されます
-            </div>
-          </div>
-
-          {/* 色補正（スライダー） */}
-          <div style={{ display: "grid", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>色補正</span>
-              <b>{colorStrength.toFixed(2)}</b>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={colorStrength}
-              onChange={(e) => setColorStrength(Number(e.target.value))}
-            />
-            <div style={{ color: "#666", fontSize: 12 }}>
-              タイルの色味を補正して作成画像の再現度を高めます
-              0.4〜0.6程度を推奨しています
-            </div>
-          </div>
-          {/* オーバーレイ（トグル＋スライダー） */}
-          <div style={{ display: "grid", gap: 10, padding: 12, border: "1px solid #ddd", borderRadius: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>元画像オーバーレイ</span>
-
-              {/* トグル */}
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={overlayEnabled}
-                  onChange={(e) => setOverlayEnabled(e.target.checked)}
-                />
-                <span className="switch-slider" />
+          <div className="panel-body">
+            <div className="row">
+              <label className="file">
+                <input type="file" accept="image/*" onChange={(e) => setTargetFile(e.target.files?.[0] ?? null)} />
+                <span>{targetFile ? targetFile.name : "???????"}</span>
               </label>
+              <button className="btn" onClick={uploadTarget}>??????</button>
             </div>
 
-            <div style={{ opacity: overlayEnabled ? 1 : 0.45 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <span>強度</span>
-                <b>{overlayEnabled ? overlayStrength.toFixed(2) : "OFF"}</b>
-              </div>
+            <div className="list">
+              {targets.length === 0 && <div className="muted">?????????????</div>}
+              {targets.map((t) => (
+                <label key={t.id} className={`list-item ${selectedTarget === t.id ? "active" : ""}`}>
+                  <input
+                    type="radio"
+                    name="target"
+                    checked={selectedTarget === t.id}
+                    onChange={() => setSelectedTarget(t.id)}
+                  />
+                  <span className="list-title">{t.name}</span>
+                  <span className="list-meta">{t.width} ? {t.height}</span>
+                  <button className="btn small" onClick={() => deleteTarget(t.id)}>??</button>
+                </label>
+              ))}
+            </div>
 
+            {selectedTarget && (
+              <div className="preview">
+                <div className="preview-title">?????</div>
+                <img
+                  src={apiUrl(`/api/targets/${selectedTarget}/file?sid=${encodeURIComponent(sessionId)}&v=${Date.now()}`)}
+                  alt="target preview"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>2) ?????</h2>
+              <p>?????????ZIP????????????</p>
+            </div>
+            <span className="badge">ZIP</span>
+          </div>
+
+          <div className="panel-body">
+            <div className="row">
+              <input
+                className="input"
+                value={matName}
+                onChange={(e) => setMatName(e.target.value)}
+                placeholder="??????"
+              />
+              <label className="file">
+                <input type="file" accept=".zip" onChange={(e) => setMatZip(e.target.files?.[0] ?? null)} />
+                <span>{matZip ? matZip.name : "ZIP???"}</span>
+              </label>
+              <button className="btn" onClick={uploadMaterials}>??????</button>
+            </div>
+
+            <div className="list">
+              {materials.length === 0 && <div className="muted">?????????????</div>}
+              {materials.map((m) => (
+                <label key={m.id} className={`list-item ${selectedMaterial === m.id ? "active" : ""}`}>
+                  <input
+                    type="radio"
+                    name="material"
+                    checked={selectedMaterial === m.id}
+                    onChange={() => setSelectedMaterial(m.id)}
+                  />
+                  <span className="list-title">{m.name}</span>
+                  <span className="list-meta">
+                    [{m.status}] {m.count ? `tiles=${m.count}` : ""}{m.status !== "ready" ? ` / ${m.progress}%` : ""}
+                  </span>
+                  <span className="list-hint">{m.message}</span>
+                  <button className="btn small" onClick={() => deleteMaterial(m.id)}>??</button>
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel" id="job-panel">
+        <div className="panel-header">
+          <div>
+            <h2>3) ????</h2>
+            <p>????????????????????????</p>
+          </div>
+          <span className="badge">Mosaic</span>
+        </div>
+
+        <div className="panel-body">
+          <div className="controls">
+            <div className="control">
+              <div className="control-head">
+                <span>??????</span>
+                <b>{tileSize}px</b>
+              </div>
+              <input
+                type="range"
+                min={8}
+                max={256}
+                step={1}
+                value={tileSize}
+                onChange={(e) => setTileSize(Number(e.target.value))}
+              />
+              <div className="helper">???????????????????????</div>
+            </div>
+
+            <div className="control">
+              <div className="control-head">
+                <span>????</span>
+                <b>{noRepeatK}</b>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={30}
+                step={1}
+                value={noRepeatK}
+                onChange={(e) => setNoRepeatK(Number(e.target.value))}
+              />
+              <div className="helper">??????????????????</div>
+            </div>
+
+            <div className="control">
+              <div className="control-head">
+                <span>????</span>
+                <b>{colorStrength.toFixed(2)}</b>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={colorStrength}
+                onChange={(e) => setColorStrength(Number(e.target.value))}
+              />
+              <div className="helper">??????????????????</div>
+            </div>
+
+            <div className="control">
+              <div className="control-head">
+                <span>?????????</span>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={overlayEnabled}
+                    onChange={(e) => setOverlayEnabled(e.target.checked)}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
               <input
                 type="range"
                 min={0}
@@ -437,54 +445,51 @@ export default function App() {
                 disabled={!overlayEnabled}
                 onChange={(e) => setOverlayStrength(Number(e.target.value))}
               />
-
-              <div style={{ color: "#666", fontSize: 12, marginTop: 6 }}>
-                ONにすると薄めた元画像をオーバーレイします
-                これにより滑らかな仕上がりになりますが強度が高すぎるとモザイク感が薄れます
-              </div>
+              <div className="helper">ON????????????????</div>
             </div>
           </div>
 
-          {/* 生成ボタン（元の位置でOK） */}
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <button onClick={startJob} style={{ padding: "10px 16px", borderRadius: 10, cursor: "pointer" }}>
-              生成開始
-            </button>
-
+          <div className="row">
+            <button className="btn primary" onClick={startJob}>??????</button>
             {selectedTargetObj && (
-              <span style={{ color: "#666" }}>
-                出力サイズ：{selectedTargetObj.width}×{selectedTargetObj.height}（ターゲットと同一）
-              </span>
+              <span className="muted">???: {selectedTargetObj.width} ? {selectedTargetObj.height}</span>
             )}
           </div>
-        </div>
 
-        {jobId && (
-          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-            <div>
-              job: <code>{jobId}</code>
+          {jobId && (
+            <div className="job">
+              <div className="job-meta">
+                <span>job</span>
+                <code>{jobId}</code>
+              </div>
+              <div className="job-meta">
+                <span>status</span>
+                <b>{status}</b> / {progress}%
+              </div>
+              <div className="progress">
+                <div style={{ width: `${progress}%` }} />
+              </div>
+              <div className="muted">{message}</div>
             </div>
-            <div>
-              status: <b>{status}</b> / {progress}%
-            </div>
-            <div style={{ height: 10, background: "#eee", borderRadius: 999 }}>
-              <div style={{ width: `${progress}%`, height: "100%", background: "#333", borderRadius: 999 }} />
-            </div>
-            <div style={{ color: "#666" }}>{message}</div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      </section>
 
       {resultUrl && (
-        <div style={{ marginTop: 20 }}>
-          <h2>Result</h2>
-          <a href={resultUrl} download style={{ display: "inline-block", marginBottom: 10 }}>
-            ダウンロード
-          </a>
-          <div>
-            <img src={resultUrl} style={{ maxWidth: "100%", borderRadius: 12, border: "1px solid #ddd" }} />
+        <section className="panel result">
+          <div className="panel-header">
+            <div>
+              <h2>Result</h2>
+              <p>????????????????</p>
+            </div>
+            <a className="btn ghost" href={resultUrl} download>
+              ??????
+            </a>
           </div>
-        </div>
+          <div className="panel-body">
+            <img src={resultUrl} alt="mosaic result" />
+          </div>
+        </section>
       )}
     </div>
   );
